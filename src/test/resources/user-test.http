@@ -8,11 +8,11 @@ Content-Type: application/json
 
 {
   "phone": "13889343526",
-  "code": "529279",
+  "code": "630689",
   "password": ""
 }
 
 ### GET 访问主页
 GET http://localhost:8081/user/me
-authorization: 4fd3dbdacb08414d9b7ed45f0a1d2645
+authorization: fec80389660846e8949f2388e69c935b
 
