@@ -1,0 +1,18 @@
+### POST 获取验证码
+POST http://localhost:8081/user/code?phone=13889343526
+
+
+### POST 使用验证码登录
+POST http://localhost:8081/user/login
+Content-Type: application/json
+
+{
+  "phone": "13889343526",
+  "code": "529279",
+  "password": ""
+}
+
+### GET 访问主页
+GET http://localhost:8081/user/me
+authorization: 4fd3dbdacb08414d9b7ed45f0a1d2645
+
