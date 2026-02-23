@@ -16,8 +16,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TTL;
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -47,18 +46,27 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         String shopKey = CACHE_SHOP_KEY + id;
         Map<Object, Object> cacheShopMap = stringRedisTemplate.opsForHash().entries(shopKey);
 
-        // 2. 若已获取到, 则返回
+        // 2. 若已获取到且非空值, 则返回信息. 若获取到空值, 则返回错误
         if (!cacheShopMap.isEmpty()) {
+            if (cacheShopMap.containsKey(NULL_HASH_FIELD)) {
+                return Result.fail("商铺信息不存在");
+            }
             Shop cacheShop = BeanUtil.fillBeanWithMap(cacheShopMap, new Shop(), false);
             return Result.ok(cacheShop);
         }
 
+
         // 3. 若未获取到, 则去MySQL中获取
         Shop shop = shopMapper.selectById(id);
 
-        // 4. 若仍未获取到, 则用户不存在.
+        // 4. 若仍未获取到, 则用户不存在. 并将空值写入Redis.
         if (shop == null) {
-            return Result.fail("商铺不存在");
+            // 将空值写入Redis
+            Map<String, String> nullMap = new HashMap<>();
+            nullMap.put(NULL_HASH_FIELD, "");
+            stringRedisTemplate.opsForHash().putAll(shopKey, nullMap);
+            stringRedisTemplate.expire(shopKey, CACHE_NULL_TTL, TimeUnit.MINUTES);
+            return Result.fail("商铺信息不存在");
         }
 
         // 5. 若获取到, 将获取到的信息写入Redis
