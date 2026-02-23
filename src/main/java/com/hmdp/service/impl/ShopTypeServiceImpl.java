@@ -11,8 +11,10 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TYPE_KEY;
+import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TYPE_TTL;
 
 /**
  * <p>
@@ -27,8 +29,6 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
-    @Resource
-    private ShopTypeMapper shopTypeMapper;
 
     /**
      * 查询商店类型列表, 利用了Redis缓存
@@ -55,7 +55,7 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
 
         // 5. 若查询到, 将列表写入Redis, 再返回
         String typeJsonString = JSONUtil.toJsonStr(typeList);
-        stringRedisTemplate.opsForValue().set(cacheTypeKey, typeJsonString);
+        stringRedisTemplate.opsForValue().set(cacheTypeKey, typeJsonString, CACHE_SHOP_TYPE_TTL, TimeUnit.MINUTES);
         return Result.ok(typeList);
     }
 }
