@@ -9,6 +9,7 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.util.HashMap;
@@ -69,5 +70,28 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         stringRedisTemplate.expire(shopKey, CACHE_SHOP_TTL, TimeUnit.MINUTES);
         // 6. 结束
         return Result.ok(shop);
+    }
+
+    /**
+     * 更新店铺信息
+     * (先更新数据库, 再删除缓存)
+     *
+     * @param shop
+     * @return
+     */
+    @Override
+    @Transactional
+    public Result updateShop(Shop shop) {
+        Long shopId = shop.getId();
+        if (shopId == null) {
+            return Result.fail("店铺id不可为空");
+        }
+        // 1. 更新数据库中数据
+        updateById(shop);
+
+        // 2. 删除缓存
+        stringRedisTemplate.delete(CACHE_SHOP_KEY + shopId);
+
+        return Result.ok();
     }
 }
