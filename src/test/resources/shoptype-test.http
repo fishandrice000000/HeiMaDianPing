@@ -1,0 +1,4 @@
+### GET 查询商店类型列表
+GET http://localhost:8081/shop-type/list
+
+###
