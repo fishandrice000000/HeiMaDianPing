@@ -1,0 +1,5 @@
+### GET 根据ID查询商店信息
+GET http://localhost:8081/shop/1
+
+
+###
