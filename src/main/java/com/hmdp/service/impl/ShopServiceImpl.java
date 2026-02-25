@@ -34,7 +34,6 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Resource
     private ShopMapper shopMapper;
-    private boolean isLocked;
 
     /**
      * 根据id查询商店信息
@@ -45,10 +44,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Override
     public Result queryShopById(Long id) {
         // 解决了缓存穿透
-        Shop shop = queryWithPassThrough(id);
+//        Shop shop = queryWithPassThrough(id);
 
         // 解决了缓存穿透 + 缓存击穿
-        // Shop shop = queryWithMutex(id);
+        Shop shop = queryWithMutex(id);
 
         if (shop == null) {
             return Result.fail("商店不存在");
@@ -112,8 +111,74 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      */
     @Override
     public Shop queryWithMutex(Long id) {
-        // TODO
-        return null;
+        // 0. 准备Redis缓存Key互斥锁Key, 以及重试次数上限
+        String shopKey = CACHE_SHOP_KEY + id;
+        String lockKey = LOCK_SHOP_KEY + id;
+        int maxRetries = MAX_RETRY_COUNT;
+        Shop shop = null;
+
+        // 1. 开始自旋
+        while (maxRetries > 0) {
+            // 2. 检查Redis缓存是否命中
+            Map<Object, Object> cacheShopMap = stringRedisTemplate.opsForHash().entries(shopKey);
+
+            // 2.1 命中非空值, 返回之
+            if (!cacheShopMap.isEmpty() && !cacheShopMap.containsKey(NULL_HASH_FIELD)) {
+                shop = BeanUtil.fillBeanWithMap(cacheShopMap, new Shop(), false);
+                return shop;
+            }
+
+            // 2.2 命中空值, 返回之
+            if (!cacheShopMap.isEmpty() && cacheShopMap.containsKey(NULL_HASH_FIELD)) {
+                return shop;
+            }
+
+            // 2.3 未命中, 准备拿互斥锁, 随后尝试去MySQL中查询数据, 并将其写入Redis缓存
+            // 3. 获取互斥锁
+            boolean isUnlocked = tryLock(lockKey);
+
+            if (!isUnlocked) {
+                // 3.1 获取失败, 抛出异常, 线程休眠50ms
+                try {
+                    Thread.sleep(50L);
+                    maxRetries--;
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            } else {
+                try {
+                    // 3.2 获取成功, 尝试去MySQL查询数据
+                    shop = shopMapper.selectById(id);
+                    // 使用sleep模拟查询延时
+                    Thread.sleep(200L);
+
+                    // 4.1 查询失败, 将空写入缓存
+                    if (shop == null) {
+                        Map<String, String> nullMap = new HashMap<>();
+                        nullMap.put(NULL_HASH_FIELD, "");
+                        stringRedisTemplate.opsForHash().putAll(shopKey, nullMap);
+                        stringRedisTemplate.expire(shopKey, CACHE_NULL_TTL, TimeUnit.MINUTES);
+                    }
+                    // 4.2 查询成功, 并将Shop写入缓存
+                    if (shop != null) {
+                        Map<String, Object> shopMap = BeanUtil.beanToMap(shop, new HashMap<>(),
+                                CopyOptions.create().
+                                        setIgnoreNullValue(true).
+                                        setFieldValueEditor((fieldName, fieldValue) -> fieldValue == null ? null : fieldValue.toString()));
+                        stringRedisTemplate.opsForHash().putAll(shopKey, shopMap);
+                        stringRedisTemplate.expire(shopKey, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+                    }
+                    // 5. 返回之
+                    return shop;
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                } finally {
+                    // 6. 不管怎样最后释放锁, 负责兜底来避免死锁
+                    unlock(lockKey);
+                }
+            }
+        }
+        return shop;
     }
 
     /**
@@ -123,7 +188,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @return true, 获取成功; false, 获取失败
      */
     private boolean tryLock(String lockKey) {
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, "locked", 10, TimeUnit.SECONDS);
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, "locked", LOCK_SHOP_TTL, TimeUnit.SECONDS);
         return BooleanUtil.isTrue(flag);
     }
 

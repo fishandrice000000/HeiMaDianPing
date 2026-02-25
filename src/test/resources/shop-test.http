@@ -1,5 +1,5 @@
 ### GET 根据ID查询商店信息
-GET http://localhost:8081/shop/50
+GET http://localhost:8081/shop/2
 
 
 ### PUT 更新商铺信息
