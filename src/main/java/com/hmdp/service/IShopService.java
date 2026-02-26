@@ -18,6 +18,8 @@ public interface IShopService extends IService<Shop> {
 
     Shop queryWithMutex(Long id);
 
+    Shop queryWithLogicalExpire(Long id);
+
     Shop queryWithPassThrough(Long id);
 
     Result updateShop(Shop shop);
