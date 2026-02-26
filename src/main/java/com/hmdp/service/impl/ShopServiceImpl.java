@@ -1,8 +1,7 @@
 package com.hmdp.service.impl;
 
-import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.bean.copier.CopyOptions;
 import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
@@ -16,8 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static com.hmdp.utils.RedisConstants.*;
@@ -70,35 +67,28 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     public Shop queryWithPassThrough(Long id) {
         // 1.试图去Redis缓存中获取信息
         String shopKey = CACHE_SHOP_KEY + id;
-        Shop shop;
-        Map<Object, Object> cacheShopMap = stringRedisTemplate.opsForHash().entries(shopKey);
+        String cacheShopJSON = stringRedisTemplate.opsForValue().get(shopKey);
 
-        // 2. 若已获取到且非空值, 则返回信息. 若获取到空值, 则返回错误
-        if (!cacheShopMap.isEmpty()) {
-            if (cacheShopMap.containsKey(NULL_HASH_FIELD)) {
-                return null;
-            }
-            return BeanUtil.fillBeanWithMap(cacheShopMap, new Shop(), false);
+        // 2.1 若命中有效缓存, 返回之
+        if (StrUtil.isNotBlank(cacheShopJSON)) {
+            return JSONUtil.toBean(cacheShopJSON, Shop.class);
         }
 
-        // 3. 若未获取到, 则去MySQL中获取
-        shop = shopMapper.selectById(id);
+        // 2.1 若命中空缓存, 返回之
+        if (cacheShopJSON != null) {
+            return null;
+        }
+
+        // 3. 若缓存未命中, 则去MySQL中获取
+        Shop shop = shopMapper.selectById(id);
 
         // 4. 若仍未获取到, 则用户不存在. 并将空值写入Redis.
         if (shop == null) {
             // 将空值写入Redis
-            Map<String, String> nullMap = new HashMap<>();
-            nullMap.put(NULL_HASH_FIELD, "");
-            stringRedisTemplate.opsForHash().putAll(shopKey, nullMap);
-            stringRedisTemplate.expire(shopKey, CACHE_NULL_TTL, TimeUnit.MINUTES);
+            stringRedisTemplate.opsForValue().set(shopKey, CACHE_NULL_VALUE, CACHE_NULL_TTL, TimeUnit.MINUTES);
         } else {
             // 5. 若获取到, 将获取到的信息写入Redis
-            Map<String, Object> shopMap = BeanUtil.beanToMap(shop, new HashMap<>(),
-                    CopyOptions.create().
-                            setIgnoreNullValue(true).
-                            setFieldValueEditor((fieldName, fieldValue) -> fieldValue == null ? null : fieldValue.toString()));
-            stringRedisTemplate.opsForHash().putAll(shopKey, shopMap);
-            stringRedisTemplate.expire(shopKey, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+            stringRedisTemplate.opsForValue().set(shopKey, JSONUtil.toJsonStr(shop), CACHE_SHOP_TTL, TimeUnit.MINUTES);
         }
         // 6. 结束
         return shop;
@@ -144,29 +134,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         String shopKey = CACHE_SHOP_KEY + id;
         String lockKey = LOCK_SHOP_KEY + id;
         int maxRetries = MAX_RETRY_COUNT;
-        Shop shop = null;
 
         // 1. 开始自旋
         while (maxRetries > 0) {
             // 2. 检查Redis缓存是否命中
-            Map<Object, Object> cacheShopMap = stringRedisTemplate.opsForHash().entries(shopKey);
-
+            String cacheShopJSON = stringRedisTemplate.opsForValue().get(shopKey);
             // 2.1 命中非空值, 返回之
-            if (!cacheShopMap.isEmpty() && !cacheShopMap.containsKey(NULL_HASH_FIELD)) {
-                shop = BeanUtil.fillBeanWithMap(cacheShopMap, new Shop(), false);
-                return shop;
+            if (StrUtil.isNotBlank(cacheShopJSON)) {
+                return JSONUtil.toBean(cacheShopJSON, Shop.class);
             }
-
             // 2.2 命中空值, 返回之
-            if (!cacheShopMap.isEmpty() && cacheShopMap.containsKey(NULL_HASH_FIELD)) {
-                return shop;
+            if (cacheShopJSON != null) {
+                return null;
             }
 
-            // 2.3 未命中, 准备拿互斥锁, 随后尝试去MySQL中查询数据, 并将其写入Redis缓存
-            // 3. 获取互斥锁
-            boolean isUnlocked = tryLock(lockKey);
+            // 3. 未命中, 获取互斥锁
+            boolean isLock = tryLock(lockKey);
 
-            if (!isUnlocked) {
+            if (!isLock) {
                 // 3.1 获取失败, 抛出异常, 线程休眠50ms
                 try {
                     Thread.sleep(50L);
@@ -177,25 +162,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             } else {
                 try {
                     // 3.2 获取成功, 尝试去MySQL查询数据
-                    shop = shopMapper.selectById(id);
+                    Shop shop = shopMapper.selectById(id);
                     // 使用sleep模拟查询延时
                     Thread.sleep(200L);
 
                     // 4.1 查询失败, 将空写入缓存
                     if (shop == null) {
-                        Map<String, String> nullMap = new HashMap<>();
-                        nullMap.put(NULL_HASH_FIELD, "");
-                        stringRedisTemplate.opsForHash().putAll(shopKey, nullMap);
-                        stringRedisTemplate.expire(shopKey, CACHE_NULL_TTL, TimeUnit.MINUTES);
+                        stringRedisTemplate.opsForValue().set(shopKey, CACHE_NULL_VALUE, CACHE_NULL_TTL, TimeUnit.MINUTES);
                     }
                     // 4.2 查询成功, 并将Shop写入缓存
                     if (shop != null) {
-                        Map<String, Object> shopMap = BeanUtil.beanToMap(shop, new HashMap<>(),
-                                CopyOptions.create().
-                                        setIgnoreNullValue(true).
-                                        setFieldValueEditor((fieldName, fieldValue) -> fieldValue == null ? null : fieldValue.toString()));
-                        stringRedisTemplate.opsForHash().putAll(shopKey, shopMap);
-                        stringRedisTemplate.expire(shopKey, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+                        stringRedisTemplate.opsForValue().set(shopKey, JSONUtil.toJsonStr(shop), CACHE_SHOP_TTL, TimeUnit.MINUTES);
                     }
                     // 5. 返回之
                     return shop;
@@ -207,7 +184,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
                 }
             }
         }
-        return shop;
+        return null;
     }
 
     /**
