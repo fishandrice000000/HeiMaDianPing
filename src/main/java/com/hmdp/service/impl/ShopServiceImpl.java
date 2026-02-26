@@ -3,16 +3,19 @@ package com.hmdp.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.bean.copier.CopyOptions;
 import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
+import com.hmdp.utils.RedisData;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -99,6 +102,32 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         }
         // 6. 结束
         return shop;
+    }
+
+    /**
+     * 根据id查询商店信息, 利用Redis缓存
+     * 利用新建空缓存, 解决了缓存穿透问题
+     * 利用逻辑过期, 解决了缓存击穿问题
+     *
+     * @param id 商店id
+     * @return 若不存在返回null, 若存在返回商店信息
+     */
+    public Shop queryWithLogicalExpire(Long id) {
+        // TODO
+        return null;
+    }
+
+    public void saveShopToRedisCache(Long id, Long expireSeconds) {
+        // 1. 查询商店信息
+        Shop shop = shopMapper.selectById(id);
+
+        // 2. 封装到RedisData类中
+        RedisData redisData = new RedisData();
+        redisData.setData(shop);
+        redisData.setExpireTime(LocalDateTime.now().plusSeconds(expireSeconds));
+
+        // 3. 写入Redis
+        stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(redisData));
     }
 
     /**
