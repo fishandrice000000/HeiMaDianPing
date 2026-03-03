@@ -34,6 +34,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     /**
      * 实现秒杀下单功能
+     * 通过乐观锁CAS防止超卖
      *
      * @param voucherId
      * @return 若成功, 返回订单id; 若失败, 返回错误信息
@@ -43,6 +44,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     public Result seckillVouchoer(Long voucherId) {
         // 1. 查询优惠券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+        Integer stock = voucher.getStock();
 
         // 2. 判断秒杀是否开始
         if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
@@ -61,8 +63,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         // 5. 扣减库存
         boolean success = seckillVoucherService.update().
-                setSql(
-                        "stock = stock - 1 ").eq("voucher_id", voucherId).update();
+                setSql("stock = stock - 1 ").eq("voucher_id", voucherId).
+                // CAS实现乐观锁, 因为数据库有行锁, 在进行增删改查时是原子性的
+                // 所以使用"库存大于0"的判断, 而不是"库存等于查询时的库存", 是有效的
+                        gt("stock", 0).update();
         if (!success) {
             return Result.fail("库存不足");
         }
