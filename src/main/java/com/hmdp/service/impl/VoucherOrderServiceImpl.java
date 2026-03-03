@@ -9,6 +9,7 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,16 +36,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     /**
      * 实现秒杀下单功能
      * 通过乐观锁CAS防止超卖
+     * 通过synchronized悲观锁实现一人一单功能
      *
-     * @param voucherId
+     * @param voucherId 优惠券Id
      * @return 若成功, 返回订单id; 若失败, 返回错误信息
      */
     @Override
-    @Transactional
     public Result seckillVouchoer(Long voucherId) {
+        // 0. 获取用户ID
+        Long userId = UserHolder.getUser().getId();
         // 1. 查询优惠券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        Integer stock = voucher.getStock();
 
         // 2. 判断秒杀是否开始
         if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
@@ -61,7 +63,35 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足");
         }
 
-        // 5. 扣减库存
+        // 加入悲观锁, 确保一人一单
+        // 以userId为锁对象实现细粒度上锁提高运行效率
+        // 这里
+        synchronized (userId.toString().intern()) {
+            // 获取代理对象, 使得注解@Transactional
+            // 不会因为程序越过SpringBoot创建的代理对象, 去直接调用原生对象本身的方法而失效
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            return proxy.createVoucherOrder(voucherId);
+        }
+    }
+
+    /**
+     * 订单创建, 确保一人一单, 防止超卖
+     *
+     * @param voucherId 优惠券Id
+     * @return 若成功, 返回订单id; 若失败, 返回错误信息
+     */
+    @Transactional
+    @Override
+    public Result createVoucherOrder(Long voucherId) {
+        Long userId = UserHolder.getUser().getId();
+
+        // 5. 判断是否重复下单, 确保一人一单
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        if (count > 0) {
+            return Result.fail("不能重复购买");
+        }
+
+        // 6. 扣减库存
         boolean success = seckillVoucherService.update().
                 setSql("stock = stock - 1 ").eq("voucher_id", voucherId).
                 // CAS实现乐观锁, 因为数据库有行锁, 在进行增删改查时是原子性的
@@ -71,20 +101,19 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足");
         }
 
-        // 6. 创建订单
+        // 7. 创建订单
         VoucherOrder voucherOrder = new VoucherOrder();
-        // 6.1 设置订单ID
+        // 7.1 设置订单ID
         Long orderId = redisIdWorker.nextId("order");
         voucherOrder.setId(orderId);
-        // 6.2 设置用户ID
-        Long userId = UserHolder.getUser().getId();
+        // 7.2 设置用户ID
         voucherOrder.setUserId(userId);
-        // 6.3 设置优惠券ID
+        // 7.3 设置优惠券ID
         voucherOrder.setVoucherId(voucherId);
-        // 6.4 将订单写入数据库
+        // 7.4 将订单写入数据库
         save(voucherOrder);
 
-        // 7. 返回订单id
+        // 8. 返回订单id
         return Result.ok(orderId);
     }
 }
