@@ -8,8 +8,10 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,13 +27,17 @@ import java.time.LocalDateTime;
  * @since 2021-12-22
  */
 @Service
-public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
+public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
+        implements IVoucherOrderService {
 
     @Resource
     private ISeckillVoucherService seckillVoucherService;
 
     @Resource
     private RedisIdWorker redisIdWorker;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     /**
      * 实现秒杀下单功能
@@ -42,7 +48,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
      * @return 若成功, 返回订单id; 若失败, 返回错误信息
      */
     @Override
-    public Result seckillVouchoer(Long voucherId) {
+    public Result seckillVoucher(Long voucherId) {
         // 0. 获取用户ID
         Long userId = UserHolder.getUser().getId();
         // 1. 查询优惠券
@@ -63,15 +69,34 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足");
         }
 
-        // 加入悲观锁, 确保一人一单
-        // 以userId为锁对象实现细粒度上锁提高运行效率
-        // 这里
-        synchronized (userId.toString().intern()) {
-            // 获取代理对象, 使得注解@Transactional
-            // 不会因为程序越过SpringBoot创建的代理对象, 去直接调用原生对象本身的方法而失效
+        // // 加入悲观锁, 确保一人一单
+        // // 以userId为锁对象实现细粒度上锁提高运行效率
+        // // 这里
+        // synchronized (userId.toString().intern()) {
+        // // 获取代理对象, 使得注解@Transactional
+        // // 不会因为程序越过SpringBoot创建的代理对象, 去直接调用原生对象本身的方法而失效
+        // IVoucherOrderService proxy = (IVoucherOrderService)
+        // AopContext.currentProxy();
+        // return proxy.createVoucherOrder(voucherId);
+        // }
+
+        // 使用分布式锁实现一人一单
+        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        // 获取锁
+        boolean isLock = lock.tryLock(5);
+        // 获取锁失败, 返回错误信息
+        if (!isLock) {
+            return Result.fail("禁止重复下单");
+        }
+        // 获取锁成功, 创建订单
+        try {
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
+        } finally {
+            // 兜底避免死锁
+            lock.unlock();
         }
+
     }
 
     /**
@@ -92,11 +117,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         // 6. 扣减库存
-        boolean success = seckillVoucherService.update().
-                setSql("stock = stock - 1 ").eq("voucher_id", voucherId).
-                // CAS实现乐观锁, 因为数据库有行锁, 在进行增删改查时是原子性的
-                // 所以使用"库存大于0"的判断, 而不是"库存等于查询时的库存", 是有效的
-                        gt("stock", 0).update();
+        boolean success = seckillVoucherService.update().setSql("stock = stock - 1 ").eq("voucher_id", voucherId).
+        // CAS实现乐观锁, 因为数据库有行锁, 在进行增删改查时是原子性的
+        // 所以使用"库存大于0"的判断, 而不是"库存等于查询时的库存", 是有效的
+                gt("stock", 0).update();
         if (!success) {
             return Result.fail("库存不足");
         }
